@@ -44,5 +44,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="..\LICENSE" />
+  </ItemGroup>
+  <ItemGroup>
+    <PandocSchema Include="..\README.md" />
   </ItemGroup>
 </Project>

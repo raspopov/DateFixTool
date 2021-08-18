@@ -36,6 +36,8 @@ void SvcReportEvent(WORD type /* EVENTLOG_ERROR_TYPE, EVENTLOG_INFORMATION_TYPE,
 
 int __cdecl _tmain(int argc, TCHAR *argv[])
 {
+	HANDLE hAppMutex = CreateMutex( nullptr, TRUE, _T("Global\\") SVCNAME );
+
 	if ( argc > 1 && lstrcmpi( argv[ 1 ], _T("install") ) == 0 )
     {
         if ( SvcInstall( SVCNAME, SVCDISPLAY ) )
@@ -46,7 +48,6 @@ int __cdecl _tmain(int argc, TCHAR *argv[])
 		{
 			_tprintf( _T("Cannot install service (%u)\n"), GetLastError() );
 		}
-		return 0;
     }
 	else if ( argc > 1 && lstrcmpi( argv[ 1 ], _T("uninstall") ) == 0 )
     {
@@ -58,28 +59,31 @@ int __cdecl _tmain(int argc, TCHAR *argv[])
 		{
 			_tprintf( _T("Cannot uninstall service (%u)\n"), GetLastError() );
 		}
-		return 0;
     }
-
-	TCHAR SvcName[] = { SVCNAME };
-	const SERVICE_TABLE_ENTRY DispatchTable[] =
+	else
 	{
-		{ SvcName, SvcMain },
-		{ nullptr, nullptr }
-	};
+		TCHAR SvcName[] = { SVCNAME };
+		const SERVICE_TABLE_ENTRY DispatchTable[] =
+		{
+			{ SvcName, SvcMain },
+			{ nullptr, nullptr }
+		};
 
-    if ( ! StartServiceCtrlDispatcher( DispatchTable ) )
-    {
-		if ( GetLastError() == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT )
+		if ( ! StartServiceCtrlDispatcher( DispatchTable ) )
 		{
-			// Запуск не как службы
-			_tprintf( _T("%s\nUsage: %s [ install | uninstall ]\n"), SVCDESC, PathFindFileName( argv[ 0 ] ) );
+			if ( GetLastError() == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT )
+			{
+				_tprintf( _T("%s\nUsage: %s [ install | uninstall ]\n"), SVCDESC, PathFindFileName( argv[ 0 ] ) );
+			}
+			else
+			{
+				SvcReportEvent( EVENTLOG_ERROR_TYPE, _T("StartServiceCtrlDispatcher") );
+			}
 		}
-		else
-		{
-			SvcReportEvent( EVENTLOG_ERROR_TYPE, _T("StartServiceCtrlDispatcher") );
-		}
-    }
+	}
+
+	// Don't CloseHandle( hAppMutex );
+	hAppMutex;
 
 	return 0;
 }
@@ -91,7 +95,7 @@ BOOL SvcInstall(LPCTSTR szServiceName, LPCTSTR szServiceDisplay)
 	TCHAR szPath[ MAX_PATH ];
     if ( GetModuleFileName( nullptr, szPath, MAX_PATH ) )
     {
-		// Регистрация источника сообщений
+		// Register event source
 		DWORD types = EVENTLOG_ERROR_TYPE | EVENTLOG_INFORMATION_TYPE | EVENTLOG_WARNING_TYPE;
 		SHSetValue( HKEY_LOCAL_MACHINE, EVENTSRC, _T("TypesSupported"), REG_DWORD, &types, sizeof( types ) );
 		SHRegSetPath( HKEY_LOCAL_MACHINE, EVENTSRC, _T("EventMessageFile"), szPath, 0 );
@@ -101,7 +105,7 @@ BOOL SvcInstall(LPCTSTR szServiceName, LPCTSTR szServiceDisplay)
 			SC_HANDLE schService = OpenService( schSCManager, szServiceName, SERVICE_ALL_ACCESS );
 			if ( ! schService )
 			{
-				// Создание службы
+				// Creating a new service
 				schService = CreateService( schSCManager, szServiceName, szServiceDisplay, SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
 					SERVICE_AUTO_START, SERVICE_ERROR_NORMAL, szPath, nullptr, nullptr, nullptr, nullptr, nullptr );
 			}
@@ -109,13 +113,13 @@ BOOL SvcInstall(LPCTSTR szServiceName, LPCTSTR szServiceDisplay)
 			{
 				success = TRUE;
 
-				// Установка описания службы
+				// Set service description
 				TCHAR desc[ MAX_PATH ];
 				_tcscpy_s( desc, SVCDESC );
 				SERVICE_DESCRIPTION srv_desc = { desc };
 				ChangeServiceConfig2( schService, SERVICE_CONFIG_DESCRIPTION, &srv_desc );
 
-				// Запуск службы
+				// Start it
 				StartService( schService, 0, nullptr );
 
 				CloseServiceHandle( schService );
@@ -138,11 +142,11 @@ BOOL SvcUnInstall(LPCTSTR szServiceName)
 	{
 		if ( SC_HANDLE schService = OpenService( schSCManager, szServiceName, SERVICE_ALL_ACCESS ) )
 		{
-			// Остановить службу
+			// Stop it
 			SERVICE_STATUS status = {};
 			ControlService( schService, SERVICE_CONTROL_STOP, &status );
 
-			// Удалить службу
+			// Delete it
 			success = DeleteService( schService );
 
 			CloseServiceHandle( schService );
@@ -177,7 +181,7 @@ void WINAPI SvcMain(DWORD dwArgc, LPTSTR *lpszArgv)
 		GetSystemTime( &st );
 		if ( st.wYear < 2020 )
 		{
-			// Установка правильного года
+			// Setting a good date
 			SYSTEMTIME good = st;
 			if ( good.wYear < 2000 )
 			{
@@ -189,29 +193,37 @@ void WINAPI SvcMain(DWORD dwArgc, LPTSTR *lpszArgv)
 			}
 			_stprintf_s( buf, _T("Setting a good date: %02u-%02u-%04u -> %02u-%02u-%04u"), st.wDay, st.wMonth, st.wYear, good.wDay, good.wMonth, good.wYear );
 			SvcReportEvent( EVENTLOG_INFORMATION_TYPE, buf );
-			SetSystemTime( &good );
-
-			// Ожидание останова
-			ReportSvcStatus( SERVICE_RUNNING );
-			WaitForSingleObject( ghSvcStopEvent, INFINITE );
-
-			// Останов
-			ReportSvcStatus( SERVICE_STOP_PENDING );
-
-			GetSystemTime( &st );
-			if ( st.wYear >= 2020 )
+			if ( SetSystemTime( &good ) )
 			{
-				// Установка поддельного года
-				SYSTEMTIME fixed = st;
-				fixed.wYear -= 20;
-				_stprintf_s( buf, _T("Setting a fixed date: %02u-%02u-%04u -> %02u-%02u-%04u"), st.wDay, st.wMonth, st.wYear, fixed.wDay, fixed.wMonth, fixed.wYear );
-				SvcReportEvent( EVENTLOG_INFORMATION_TYPE, buf );
-				SetSystemTime( &fixed );
+				// Waiting for shutdown (or stop)
+				ReportSvcStatus( SERVICE_RUNNING );
+				WaitForSingleObject( ghSvcStopEvent, INFINITE );
+
+				// Stopped
+				ReportSvcStatus( SERVICE_STOP_PENDING );
+
+				GetSystemTime( &st );
+				if ( st.wYear >= 2020 )
+				{
+					// Setting a fake date
+					SYSTEMTIME fixed = st;
+					fixed.wYear -= 20;
+					_stprintf_s( buf, _T("Setting a fixed date: %02u-%02u-%04u -> %02u-%02u-%04u"), st.wDay, st.wMonth, st.wYear, fixed.wDay, fixed.wMonth, fixed.wYear );
+					SvcReportEvent( EVENTLOG_INFORMATION_TYPE, buf );
+					if ( ! SetSystemTime( &fixed ) )
+					{
+						SvcReportEvent( EVENTLOG_ERROR_TYPE, _T("SetSystemTime") );
+					}
+				}
+				else
+				{
+					_stprintf_s( buf, _T("Date is already fixed: %02u-%02u-%04u"), st.wDay, st.wMonth, st.wYear );
+					SvcReportEvent( EVENTLOG_INFORMATION_TYPE, buf );
+				}
 			}
 			else
 			{
-				_stprintf_s( buf, _T("Date is already fixed: %02u-%02u-%04u"), st.wDay, st.wMonth, st.wYear );
-				SvcReportEvent( EVENTLOG_INFORMATION_TYPE, buf );
+				SvcReportEvent( EVENTLOG_ERROR_TYPE, _T("SetSystemTime") );
 			}
 		}
 		else
