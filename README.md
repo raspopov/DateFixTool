@@ -1,3 +1,5 @@
+[![Build status](https://ci.appveyor.com/api/projects/status/hg993uhq5ha7gnht?svg=true)](https://ci.appveyor.com/project/raspopov/datefixtool)
+
 # Date Fix Tool
 A tool for correcting the system date on a computer with the old BIOS.
 
